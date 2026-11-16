@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """The negative-control gate's runner (invoked by the workflow).
 
-Reusable: this file lives in servyi/lints, but runs against the
-CALLER's checkout (the caller's git history and workspace; cwd stays
-the caller's repo root).  The spans tool is injected via SPANS_BIN
-(built beforehand from this repo's standalone tools/test-spans crate)
-so the caller workspace needs no test-spans of its own.
+KetteVM's local copy of the servyi/lints reusable gate (same rules,
+plus the tests/regression whole-file mapping below).
 
 A FILE (not a heredoc): running a script puts its own directory first
 on sys.path, so `import region_diff` resolves regardless of cwd or
@@ -129,6 +126,10 @@ else:
 
 # ── The RUNNER: how a test file/target executes. ──
 def runner_of(file):
+    # KetteVM regression scripts: whole-file checks run through the
+    # vm example; exit-code semantics, no per-test attribution.
+    if file.startswith("tests/regression/") and file.endswith(".js"):
+        return ("regression", file)
     parts = file.split("/tests/")
     if len(parts) == 2 and parts[0] and parts[1].endswith(".rs"):
         return ("cargo", (manifest_dir(file), parts[1][:-3]))
@@ -164,6 +165,8 @@ def build_cmd(file):
     r = runner_of(file)
     if r is None:
         return None
+    if r[0] == "regression":
+        return ["cargo", "build", "--locked", "-p", "vm", "--example", "regression"]
     m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
     if r[0] == "unit":
         return m + ["--lib", "--no-run"]
@@ -181,6 +184,19 @@ def builds(file):
         print("    build failed ({}):\n{}".format(" ".join(cmd[2:]), tail))
     return r.returncode == 0
 
+def run_test(file, path, check=False):
+    """Exit-code run (whole-file checks, or filtered single tests)."""
+    r = runner_of(file)
+    if r is None:
+        return None
+    if r[0] == "regression":
+        return sh("cargo", "run", "--locked", "-p", "vm", "--example",
+                  "regression", "--", r[1], check=check)
+    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
+    if r[0] == "unit":
+        return sh(*m, "--lib", "--", path, "--exact", check=check)
+    return sh(*m, "--test", r[1][1], "--", path, "--exact", check=check)
+
 def run_target(file, check=False):
     """Run the file's WHOLE test target unfiltered and return the set
     of FAILED test names (libtest prints 'test NAME ... FAILED').
@@ -189,7 +205,7 @@ def run_target(file, check=False):
     failed set is what makes the old-tests-stay-green rule possible:
     the fault must be caught ONLY by the PR's own tests."""
     r = runner_of(file)
-    if r is None:
+    if r is None or r[0] == "regression":
         return None
     m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
     if r[0] == "unit":
